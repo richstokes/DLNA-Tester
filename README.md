@@ -123,6 +123,7 @@ uv run dlna-tester 192.168.1.100 8200 --no-color
 - Resource URL accessibility
 - HTTP HEAD support
 - Range request support (for seeking)
+- **Concurrent access** (multiple simultaneous streams)
 
 ### Protocol Compliance
 - SOAP error handling

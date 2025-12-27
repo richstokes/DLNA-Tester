@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
@@ -1258,6 +1260,99 @@ class TestSuite:
                         "Server may not support range requests (seeking might not work)",
                     )
                 break
+
+        # Test: Concurrent streaming (multiple clients)
+        self._test_concurrent_access(media_items)
+
+    def _test_concurrent_access(self, media_items: list[MediaItem]) -> None:
+        """Test server's ability to handle multiple concurrent requests.
+        
+        This simulates multiple clients streaming simultaneously.
+        """
+        # Collect URLs to test
+        test_urls: list[str] = []
+        for item in media_items[:10]:  # Use up to 10 different items
+            for res in item.resources[:1]:
+                url = res.get("url")
+                if url:
+                    test_urls.append(self.tester._make_url(url))
+                    break
+
+        if len(test_urls) < 2:
+            self._add_result(
+                "Concurrent Access",
+                TestCategory.MEDIA_RESOURCES,
+                TestStatus.SKIP,
+                "Not enough resources available to test concurrency",
+            )
+            return
+
+        # Test with 3-5 concurrent requests
+        num_concurrent = min(5, len(test_urls))
+        urls_to_test = test_urls[:num_concurrent]
+
+        self.log(f"Testing concurrent access with {num_concurrent} simultaneous requests...")
+
+        def fetch_partial(url: str) -> tuple[bool, float, str | None]:
+            """Fetch first 4KB of a resource and return (success, time, error)."""
+            import httpx
+            start = time.time()
+            try:
+                with httpx.Client(timeout=self.tester.timeout) as client:
+                    response = client.get(
+                        url,
+                        headers={"Range": "bytes=0-4095"},
+                        follow_redirects=True,
+                    )
+                    elapsed = time.time() - start
+                    if response.status_code in (200, 206):
+                        return True, elapsed, None
+                    else:
+                        return False, elapsed, f"Status {response.status_code}"
+            except Exception as e:
+                elapsed = time.time() - start
+                return False, elapsed, str(e)
+
+        # Execute concurrent requests
+        results: list[tuple[bool, float, str | None]] = []
+        with ThreadPoolExecutor(max_workers=num_concurrent) as executor:
+            futures = {executor.submit(fetch_partial, url): url for url in urls_to_test}
+            for future in as_completed(futures):
+                results.append(future.result())
+
+        # Analyze results
+        successful = sum(1 for r in results if r[0])
+        failed = num_concurrent - successful
+        avg_time = sum(r[1] for r in results) / len(results) if results else 0
+        errors = [r[2] for r in results if r[2]]
+
+        if successful == num_concurrent:
+            self._add_result(
+                "Concurrent Access",
+                TestCategory.MEDIA_RESOURCES,
+                TestStatus.PASS,
+                f"All {num_concurrent} concurrent requests succeeded (avg {avg_time:.2f}s)",
+                {"concurrent_requests": num_concurrent, "avg_response_time": round(avg_time, 3)},
+                weight=1.5,
+            )
+        elif successful > 0:
+            self._add_result(
+                "Concurrent Access",
+                TestCategory.MEDIA_RESOURCES,
+                TestStatus.WARN,
+                f"{successful}/{num_concurrent} concurrent requests succeeded",
+                {"successful": successful, "failed": failed, "errors": errors[:3]},
+                weight=1.5,
+            )
+        else:
+            self._add_result(
+                "Concurrent Access",
+                TestCategory.MEDIA_RESOURCES,
+                TestStatus.FAIL,
+                f"All {num_concurrent} concurrent requests failed",
+                {"errors": errors[:3]},
+                weight=1.5,
+            )
 
     # =========================================================================
     # Protocol Compliance Tests
