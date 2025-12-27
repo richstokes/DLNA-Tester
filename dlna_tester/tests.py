@@ -59,18 +59,28 @@ class TestResult:
 class TestSuite:
     """DLNA/UPnP compliance test suite."""
 
-    def __init__(self, tester: DLNATester, verbose: bool = False):
+    def __init__(
+        self,
+        tester: DLNATester,
+        verbose: bool = False,
+        full_scan: bool = False,
+        max_items: int = 1000,
+    ):
         """Initialize the test suite.
 
         Args:
             tester: The DLNATester instance to use
             verbose: Whether to print verbose output during tests
+            full_scan: If True, traverse all containers and items (slower but thorough)
+            max_items: Maximum items to scan in full_scan mode (default 1000)
         """
         self.tester = tester
         self.verbose = verbose
+        self.full_scan = full_scan
+        self.max_items = max_items
         self.results: list[TestResult] = []
         self._browsed_items: list[MediaItem] = []
-        self._max_depth = 3  # Max depth for recursive browsing tests
+        self._max_depth = 10 if full_scan else 3  # Depth limit for browsing
 
     def log(self, message: str) -> None:
         """Print message if verbose mode is enabled."""
@@ -628,8 +638,26 @@ class TestSuite:
             # Test: Browse into containers
             containers = [i for i in items if i.is_container]
             if containers:
-                self.log(f"Found {len(containers)} containers, testing recursive browse...")
-                self._test_recursive_browse(containers[0], depth=1)
+                if self.full_scan:
+                    self.log(f"Found {len(containers)} containers, performing full scan...")
+                    for container in containers:
+                        if len(self._browsed_items) >= self.max_items:
+                            self.log(f"Reached max items limit ({self.max_items})")
+                            break
+                        self._test_recursive_browse(container, depth=1)
+                    # Add result showing how many items were scanned
+                    media_count = sum(1 for i in self._browsed_items if not i.is_container)
+                    container_count = sum(1 for i in self._browsed_items if i.is_container)
+                    self._add_result(
+                        "Full Scan Complete",
+                        TestCategory.BROWSING,
+                        TestStatus.PASS,
+                        f"Scanned {len(self._browsed_items)} items ({container_count} containers, {media_count} media files)",
+                        {"total": len(self._browsed_items), "containers": container_count, "media": media_count},
+                    )
+                else:
+                    self.log(f"Found {len(containers)} containers, testing sample...")
+                    self._test_recursive_browse(containers[0], depth=1)
             else:
                 self._add_result(
                     "Container Navigation",
@@ -651,13 +679,15 @@ class TestSuite:
         """Recursively test browsing containers."""
         if depth > self._max_depth:
             return
+        if len(self._browsed_items) >= self.max_items:
+            return
 
         result = self.tester.browse(container.id, "BrowseDirectChildren")
         if result is not None:
             items, num_returned, total_matches = result
             self._browsed_items.extend(items)
 
-            if depth == 1:
+            if depth == 1 and not self.full_scan:
                 self._add_result(
                     "Container Navigation",
                     TestCategory.BROWSING,
@@ -665,17 +695,26 @@ class TestSuite:
                     f"Successfully browsed container '{container.title}' ({num_returned} items)",
                 )
 
-            # Test one more level if containers exist
+            # Recurse into sub-containers
             sub_containers = [i for i in items if i.is_container]
             if sub_containers and depth < self._max_depth:
-                self._test_recursive_browse(sub_containers[0], depth + 1)
+                if self.full_scan:
+                    # In full scan mode, browse ALL containers
+                    for sub in sub_containers:
+                        if len(self._browsed_items) >= self.max_items:
+                            break
+                        self._test_recursive_browse(sub, depth + 1)
+                else:
+                    # In normal mode, just sample first container
+                    self._test_recursive_browse(sub_containers[0], depth + 1)
         else:
-            self._add_result(
-                "Container Navigation",
-                TestCategory.BROWSING,
-                TestStatus.FAIL,
-                f"Failed to browse container '{container.title}' (ID: {container.id})",
-            )
+            if not self.full_scan:
+                self._add_result(
+                    "Container Navigation",
+                    TestCategory.BROWSING,
+                    TestStatus.FAIL,
+                    f"Failed to browse container '{container.title}' (ID: {container.id})",
+                )
 
     # =========================================================================
     # Metadata Tests
@@ -810,6 +849,116 @@ class TestSuite:
                         TestStatus.WARN,
                         f"{len(all_resources) - with_protocol_info}/{len(all_resources)} resources missing protocolInfo",
                     )
+
+                # Test: Resources have duration (required for audio/video per DLNA)
+                audio_video_items = [
+                    i for i in media_items
+                    if i.item_class and ("audioItem" in i.item_class or "videoItem" in i.item_class)
+                ]
+                if audio_video_items:
+                    av_resources = [r for i in audio_video_items for r in i.resources]
+                    with_duration = sum(1 for r in av_resources if r.get("duration"))
+                    if with_duration == len(av_resources):
+                        self._add_result(
+                            "Resource Duration",
+                            TestCategory.METADATA,
+                            TestStatus.PASS,
+                            f"All {len(av_resources)} audio/video resources have duration",
+                        )
+                    elif with_duration > 0:
+                        self._add_result(
+                            "Resource Duration",
+                            TestCategory.METADATA,
+                            TestStatus.WARN,
+                            f"{len(av_resources) - with_duration}/{len(av_resources)} audio/video resources missing duration",
+                        )
+                    else:
+                        self._add_result(
+                            "Resource Duration",
+                            TestCategory.METADATA,
+                            TestStatus.FAIL,
+                            "No audio/video resources have duration metadata",
+                        )
+
+                # Test: Resources have size (recommended)
+                with_size = sum(1 for r in all_resources if r.get("size"))
+                if with_size == len(all_resources):
+                    self._add_result(
+                        "Resource Size",
+                        TestCategory.METADATA,
+                        TestStatus.PASS,
+                        f"All {len(all_resources)} resources have size",
+                    )
+                elif with_size > 0:
+                    self._add_result(
+                        "Resource Size",
+                        TestCategory.METADATA,
+                        TestStatus.WARN,
+                        f"{len(all_resources) - with_size}/{len(all_resources)} resources missing size",
+                    )
+                else:
+                    self._add_result(
+                        "Resource Size",
+                        TestCategory.METADATA,
+                        TestStatus.WARN,
+                        "No resources have size metadata (recommended)",
+                    )
+
+                # Test: Audio resources have bitrate/sampleFrequency
+                audio_items = [
+                    i for i in media_items
+                    if i.item_class and "audioItem" in i.item_class
+                ]
+                if audio_items:
+                    audio_resources = [r for i in audio_items for r in i.resources]
+                    with_bitrate = sum(1 for r in audio_resources if r.get("bitrate"))
+                    with_sample_freq = sum(1 for r in audio_resources if r.get("sample_frequency"))
+                    
+                    if with_bitrate > 0 or with_sample_freq > 0:
+                        self._add_result(
+                            "Audio Metadata",
+                            TestCategory.METADATA,
+                            TestStatus.PASS,
+                            f"Audio resources have bitrate ({with_bitrate}/{len(audio_resources)}) and/or sampleFrequency ({with_sample_freq}/{len(audio_resources)})",
+                        )
+                    else:
+                        self._add_result(
+                            "Audio Metadata",
+                            TestCategory.METADATA,
+                            TestStatus.WARN,
+                            "Audio resources missing bitrate and sampleFrequency metadata",
+                        )
+
+                # Test: Video resources have resolution
+                video_items = [
+                    i for i in media_items
+                    if i.item_class and "videoItem" in i.item_class
+                ]
+                if video_items:
+                    video_resources = [r for i in video_items for r in i.resources]
+                    with_resolution = sum(1 for r in video_resources if r.get("resolution"))
+                    
+                    if with_resolution == len(video_resources):
+                        self._add_result(
+                            "Video Resolution",
+                            TestCategory.METADATA,
+                            TestStatus.PASS,
+                            f"All {len(video_resources)} video resources have resolution",
+                        )
+                    elif with_resolution > 0:
+                        self._add_result(
+                            "Video Resolution",
+                            TestCategory.METADATA,
+                            TestStatus.WARN,
+                            f"{len(video_resources) - with_resolution}/{len(video_resources)} video resources missing resolution",
+                        )
+                    else:
+                        self._add_result(
+                            "Video Resolution",
+                            TestCategory.METADATA,
+                            TestStatus.WARN,
+                            "No video resources have resolution metadata",
+                        )
 
         # Test: UPnP class format
         classes = set(i.item_class for i in self._browsed_items if i.item_class)

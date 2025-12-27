@@ -109,6 +109,17 @@ This tool tests a DLNA media server for protocol compliance by:
     parser.add_argument(
         "--json", action="store_true", help="Output results as JSON"
     )
+    parser.add_argument(
+        "--full-scan",
+        action="store_true",
+        help="Traverse ALL containers and media items (slower but thorough)",
+    )
+    parser.add_argument(
+        "--max-items",
+        type=int,
+        default=1000,
+        help="Maximum items to scan in full-scan mode (default: 1000)",
+    )
 
     args = parser.parse_args()
 
@@ -124,18 +135,20 @@ This tool tests a DLNA media server for protocol compliance by:
         Colors.GRAY = ""
 
     if args.json:
-        run_json_output(args.host, args.port, args.timeout, args.verbose)
+        run_json_output(args.host, args.port, args.timeout, args.verbose, args.full_scan, args.max_items)
     else:
-        run_interactive(args.host, args.port, args.timeout, args.verbose)
+        run_interactive(args.host, args.port, args.timeout, args.verbose, args.full_scan, args.max_items)
 
 
-def run_json_output(host: str, port: int, timeout: float, verbose: bool) -> NoReturn:
+def run_json_output(
+    host: str, port: int, timeout: float, verbose: bool, full_scan: bool, max_items: int
+) -> NoReturn:
     """Run tests and output results as JSON."""
     import json
 
     try:
         with DLNATester(host, port, timeout) as tester:
-            suite = TestSuite(tester, verbose=verbose)
+            suite = TestSuite(tester, verbose=verbose, full_scan=full_scan, max_items=max_items)
             suite.run_all_tests()
 
             summary = suite.get_summary()
@@ -173,15 +186,19 @@ def run_json_output(host: str, port: int, timeout: float, verbose: bool) -> NoRe
         sys.exit(2)
 
 
-def run_interactive(host: str, port: int, timeout: float, verbose: bool) -> NoReturn:
+def run_interactive(
+    host: str, port: int, timeout: float, verbose: bool, full_scan: bool, max_items: int
+) -> NoReturn:
     """Run tests with interactive output."""
     print_header("DLNA/UPnP Media Server Compliance Tester")
     print(f"Target: {colorize(f'{host}:{port}', Colors.BOLD)}")
     print(f"Timeout: {timeout}s")
+    if full_scan:
+        print(f"Mode: {colorize('Full Scan', Colors.YELLOW)} (max {max_items} items)")
 
     try:
         with DLNATester(host, port, timeout) as tester:
-            suite = TestSuite(tester, verbose=verbose)
+            suite = TestSuite(tester, verbose=verbose, full_scan=full_scan, max_items=max_items)
 
             print()
             print("Running compliance tests...")

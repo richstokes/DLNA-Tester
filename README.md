@@ -47,15 +47,23 @@ uv run dlna-tester 192.168.1.100 8200
 - `-t, --timeout SECONDS`: Set request timeout (default: 10s)
 - `--no-color`: Disable colored output
 - `--json`: Output results as JSON
+- `--full-scan`: Traverse ALL containers and media items (slower but thorough)
+- `--max-items N`: Maximum items to scan in full-scan mode (default: 1000)
 
 ### Examples
 
 ```bash
-# Basic test
+# Basic test (quick sample scan)
 uv run dlna-tester 192.168.1.100 8200
 
 # Verbose mode
 uv run dlna-tester 192.168.1.100 8200 -v
+
+# Full scan - traverse ALL media items (recommended for thorough testing)
+uv run dlna-tester 192.168.1.100 8200 --full-scan
+
+# Full scan with higher item limit
+uv run dlna-tester 192.168.1.100 8200 --full-scan --max-items 5000
 
 # With longer timeout
 uv run dlna-tester 192.168.1.100 8200 --timeout 30
@@ -100,6 +108,10 @@ uv run dlna-tester 192.168.1.100 8200 --no-color
 - Required item attributes (id, title, class)
 - Container childCount
 - Media resources with protocolInfo
+- **Resource duration** (required for audio/video items per DLNA spec)
+- **Resource size** (recommended)
+- **Audio metadata** (bitrate, sampleFrequency)
+- **Video resolution**
 - UPnP class format validation
 
 ### Media Resources
