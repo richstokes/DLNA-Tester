@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
@@ -635,6 +636,52 @@ class TestSuite:
                         "Pagination may not work correctly",
                     )
 
+            # Test: Large result set with offset (StartingIndex > 0)
+            if total_matches > 2:
+                # Request items starting from index 1
+                offset_result = self.tester.browse("0", "BrowseDirectChildren", "*", 1, 1)
+                if offset_result is not None:
+                    offset_items, offset_returned, offset_total = offset_result
+                    # Verify we got an item and it's different from the first one
+                    if offset_returned >= 1 and offset_items:
+                        first_item_id = items[0].id if items else None
+                        offset_item_id = offset_items[0].id if offset_items else None
+                        if first_item_id and offset_item_id and first_item_id != offset_item_id:
+                            self._add_result(
+                                "StartingIndex Offset",
+                                TestCategory.BROWSING,
+                                TestStatus.PASS,
+                                "StartingIndex offset works correctly (returned different item)",
+                            )
+                        elif first_item_id == offset_item_id:
+                            self._add_result(
+                                "StartingIndex Offset",
+                                TestCategory.BROWSING,
+                                TestStatus.FAIL,
+                                "StartingIndex offset ignored (returned same first item)",
+                            )
+                        else:
+                            self._add_result(
+                                "StartingIndex Offset",
+                                TestCategory.BROWSING,
+                                TestStatus.PASS,
+                                "StartingIndex offset returns results",
+                            )
+                    else:
+                        self._add_result(
+                            "StartingIndex Offset",
+                            TestCategory.BROWSING,
+                            TestStatus.WARN,
+                            "StartingIndex offset returned no items",
+                        )
+                else:
+                    self._add_result(
+                        "StartingIndex Offset",
+                        TestCategory.BROWSING,
+                        TestStatus.FAIL,
+                        "Browse with StartingIndex > 0 failed",
+                    )
+
             # Test: Browse into containers
             containers = [i for i in items if i.is_container]
             if containers:
@@ -978,6 +1025,154 @@ class TestSuite:
                 f"Some classes don't follow object.* format",
                 {"valid": valid_classes, "invalid": list(classes - set(valid_classes))},
             )
+
+        # Test: Unicode/special characters in titles
+        self._test_unicode_handling()
+
+        # Test: DLNA.ORG flags in protocolInfo
+        self._test_dlna_flags(media_items if media_items else [])
+
+    def _test_unicode_handling(self) -> None:
+        """Test that Unicode and special characters are properly handled."""
+        # Check for items with non-ASCII characters
+        unicode_items = []
+        problematic_items = []
+
+        for item in self._browsed_items:
+            title = item.title
+            if not title:
+                continue
+
+            # Check if title contains non-ASCII characters
+            has_unicode = any(ord(c) > 127 for c in title)
+            if has_unicode:
+                unicode_items.append(item)
+
+            # Check for XML special characters that should be escaped
+            # If we can read the title, it means XML was properly escaped
+            xml_special = ['<', '>', '&', '"', "'"]
+            has_special = any(c in title for c in xml_special)
+            if has_special:
+                # These chars in the parsed title means they were properly escaped
+                unicode_items.append(item)
+
+            # Check for potential encoding issues (replacement character)
+            if '\ufffd' in title:  # Unicode replacement character
+                problematic_items.append(item)
+
+        if problematic_items:
+            self._add_result(
+                "Unicode Handling",
+                TestCategory.METADATA,
+                TestStatus.WARN,
+                f"{len(problematic_items)} items have encoding issues (replacement characters)",
+                {"problematic_titles": [i.title[:50] for i in problematic_items[:5]]},
+            )
+        elif unicode_items:
+            self._add_result(
+                "Unicode Handling",
+                TestCategory.METADATA,
+                TestStatus.PASS,
+                f"{len(unicode_items)} items with Unicode/special chars handled correctly",
+            )
+        else:
+            # No Unicode found - not an error, just note it
+            self._add_result(
+                "Unicode Handling",
+                TestCategory.METADATA,
+                TestStatus.PASS,
+                "No Unicode/special characters found (ASCII-only content)",
+                weight=0.5,
+            )
+
+    def _test_dlna_flags(self, media_items: list[MediaItem]) -> None:
+        """Test DLNA.ORG flags in protocolInfo strings."""
+        if not media_items:
+            return
+
+        all_resources = [r for i in media_items for r in i.resources]
+        protocol_infos = [r.get("protocol_info") for r in all_resources if r.get("protocol_info")]
+
+        if not protocol_infos:
+            return
+
+        # DLNA protocolInfo format: <protocol>:<network>:<contentFormat>:<additionalInfo>
+        # additionalInfo contains DLNA.ORG_PN, DLNA.ORG_OP, DLNA.ORG_FLAGS, etc.
+        
+        has_dlna_pn = 0  # DLNA profile name
+        has_dlna_op = 0  # Operations (seek support)
+        has_dlna_flags = 0  # DLNA flags
+        invalid_flags = []
+        valid_flags_examples = []
+
+        for pinfo in protocol_infos:
+            parts = pinfo.split(":")
+            if len(parts) >= 4:
+                additional = parts[3] if len(parts) > 3 else ""
+                
+                if "DLNA.ORG_PN=" in additional:
+                    has_dlna_pn += 1
+                if "DLNA.ORG_OP=" in additional:
+                    has_dlna_op += 1
+                if "DLNA.ORG_FLAGS=" in additional:
+                    has_dlna_flags += 1
+                    # Validate flags format (should be 32 hex chars)
+                    # Format: DLNA.ORG_FLAGS=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+                    flags_match = re.search(r'DLNA\.ORG_FLAGS=([0-9a-fA-F]+)', additional)
+                    if flags_match:
+                        flags_value = flags_match.group(1)
+                        # DLNA flags should be 32 hex characters (128 bits)
+                        if len(flags_value) == 32 and all(c in '0123456789abcdefABCDEF' for c in flags_value):
+                            if len(valid_flags_examples) < 3:
+                                valid_flags_examples.append(flags_value)
+                        else:
+                            invalid_flags.append(f"Invalid length or format: {flags_value[:40]}")
+
+        total = len(protocol_infos)
+
+        # Report DLNA profile names
+        if has_dlna_pn > 0:
+            self._add_result(
+                "DLNA Profile Names",
+                TestCategory.METADATA,
+                TestStatus.PASS,
+                f"{has_dlna_pn}/{total} resources have DLNA.ORG_PN (profile name)",
+            )
+        else:
+            self._add_result(
+                "DLNA Profile Names",
+                TestCategory.METADATA,
+                TestStatus.WARN,
+                "No resources have DLNA.ORG_PN profile names",
+            )
+
+        # Report DLNA operations parameter
+        if has_dlna_op > 0:
+            self._add_result(
+                "DLNA Operations Parameter",
+                TestCategory.METADATA,
+                TestStatus.PASS,
+                f"{has_dlna_op}/{total} resources have DLNA.ORG_OP (seek support flags)",
+            )
+
+        # Report DLNA flags
+        if has_dlna_flags > 0:
+            if invalid_flags:
+                self._add_result(
+                    "DLNA Flags Format",
+                    TestCategory.METADATA,
+                    TestStatus.WARN,
+                    f"{len(invalid_flags)} resources have malformed DLNA.ORG_FLAGS",
+                    {"errors": invalid_flags[:5]},
+                )
+            else:
+                self._add_result(
+                    "DLNA Flags Format",
+                    TestCategory.METADATA,
+                    TestStatus.PASS,
+                    f"{has_dlna_flags}/{total} resources have valid DLNA.ORG_FLAGS (32 hex chars)",
+                    {"examples": valid_flags_examples},
+                )
 
     # =========================================================================
     # Media Resource Tests

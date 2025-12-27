@@ -101,7 +101,8 @@ uv run dlna-tester 192.168.1.100 8200 --no-color
 ### Browsing
 - Root container browse (ObjectID=0)
 - BrowseMetadata support
-- Pagination (RequestedCount/StartingIndex)
+- Pagination (RequestedCount)
+- **StartingIndex offset** (large result set navigation)
 - Container navigation (recursive browsing)
 
 ### Metadata
@@ -113,6 +114,10 @@ uv run dlna-tester 192.168.1.100 8200 --no-color
 - **Audio metadata** (bitrate, sampleFrequency)
 - **Video resolution**
 - UPnP class format validation
+- **Unicode/special character handling**
+- **DLNA.ORG_PN** (profile names)
+- **DLNA.ORG_OP** (seek operation flags)
+- **DLNA.ORG_FLAGS** format validation (32 hex chars)
 
 ### Media Resources
 - Resource URL accessibility
