@@ -120,6 +120,12 @@ This tool tests a DLNA media server for protocol compliance by:
         default=1000,
         help="Maximum items to scan in full-scan mode (default: 1000)",
     )
+    parser.add_argument(
+        "-l",
+        "--listing",
+        action="store_true",
+        help="List the media library tree instead of running tests",
+    )
 
     args = parser.parse_args()
 
@@ -134,10 +140,106 @@ This tool tests a DLNA media server for protocol compliance by:
         Colors.CYAN = ""
         Colors.GRAY = ""
 
-    if args.json:
+    if args.listing:
+        run_listing(args.host, args.port, args.timeout, args.max_items, args.no_color)
+    elif args.json:
         run_json_output(args.host, args.port, args.timeout, args.verbose, args.full_scan, args.max_items)
     else:
         run_interactive(args.host, args.port, args.timeout, args.verbose, args.full_scan, args.max_items)
+
+
+def run_listing(host: str, port: int, timeout: float, max_items: int, no_color: bool) -> NoReturn:
+    """List the media library tree."""
+    from .tester import MediaItem
+
+    print_header("DLNA Media Library Listing")
+    print(f"Server: {colorize(f'{host}:{port}', Colors.BOLD)}")
+
+    try:
+        with DLNATester(host, port, timeout) as tester:
+            # Get device info
+            device = tester.fetch_device_description()
+            if device:
+                print(f"Device: {colorize(device.friendly_name, Colors.CYAN)}")
+            print()
+
+            if tester._content_directory is None:
+                print(colorize("Error: ContentDirectory service not available", Colors.RED))
+                sys.exit(1)
+
+            # Track counts
+            total_containers = 0
+            total_items = 0
+
+            def print_item(item: MediaItem, indent: int = 0) -> None:
+                """Print a single item with appropriate formatting."""
+                prefix = "  " * indent
+                if item.is_container:
+                    icon = "📁"
+                    name = colorize(item.title, Colors.BLUE + Colors.BOLD)
+                    count_str = f" ({item.child_count} items)" if item.child_count is not None else ""
+                    print(f"{prefix}{icon} {name}{colorize(count_str, Colors.GRAY)}")
+                else:
+                    # Determine icon based on class
+                    if "audioItem" in item.item_class:
+                        icon = "🎵"
+                    elif "videoItem" in item.item_class:
+                        icon = "🎬"
+                    elif "imageItem" in item.item_class:
+                        icon = "🖼️ "
+                    else:
+                        icon = "📄"
+
+                    # Get duration if available
+                    duration_str = ""
+                    if item.resources:
+                        dur = item.resources[0].get("duration")
+                        if dur:
+                            duration_str = colorize(f" [{dur}]", Colors.GRAY)
+
+                    print(f"{prefix}{icon} {item.title}{duration_str}")
+
+            def browse_recursive(object_id: str, indent: int = 0) -> None:
+                """Recursively browse and print the tree."""
+                nonlocal total_containers, total_items
+
+                if total_containers + total_items >= max_items:
+                    return
+
+                result = tester.browse(object_id, "BrowseDirectChildren", "*", 0, 0)
+                if result is None:
+                    return
+
+                items, num_returned, total_matches = result
+
+                for item in items:
+                    if total_containers + total_items >= max_items:
+                        print(f"{'  ' * indent}... (max items limit reached)")
+                        return
+
+                    print_item(item, indent)
+
+                    if item.is_container:
+                        total_containers += 1
+                        browse_recursive(item.id, indent + 1)
+                    else:
+                        total_items += 1
+
+            print(colorize("Media Library:", Colors.BOLD))
+            print()
+            browse_recursive("0")
+
+            print()
+            print(colorize(f"Total: {total_containers} folders, {total_items} files", Colors.CYAN))
+            sys.exit(0)
+
+    except KeyboardInterrupt:
+        print()
+        print(colorize("Interrupted.", Colors.YELLOW))
+        sys.exit(130)
+    except Exception as e:
+        print(colorize(f"Error: {e}", Colors.RED))
+        sys.exit(2)
 
 
 def run_json_output(

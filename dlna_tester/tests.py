@@ -1372,12 +1372,20 @@ class TestSuite:
             )
             # A compliant server should handle this gracefully
             # Either return empty result or SOAP fault
-            self._add_result(
-                "Error Handling",
-                TestCategory.PROTOCOL_COMPLIANCE,
-                TestStatus.PASS if body is not None else TestStatus.WARN,
-                "Server handles invalid requests gracefully" if body else "Server may not handle invalid requests gracefully",
-            )
+            if body is not None:
+                self._add_result(
+                    "Error Handling",
+                    TestCategory.PROTOCOL_COMPLIANCE,
+                    TestStatus.PASS,
+                    "Server handles invalid requests gracefully",
+                )
+            else:
+                self._add_result(
+                    "Error Handling",
+                    TestCategory.PROTOCOL_COMPLIANCE,
+                    TestStatus.WARN,
+                    "Server may not handle invalid requests gracefully",
+                )
 
         # Test: HTTP HEAD support
         if self.tester._device_description_url:

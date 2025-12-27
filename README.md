@@ -49,6 +49,7 @@ uv run dlna-tester 192.168.1.100 8200
 - `--json`: Output results as JSON
 - `--full-scan`: Traverse ALL containers and media items (slower but thorough)
 - `--max-items N`: Maximum items to scan in full-scan mode (default: 1000)
+- `-l, --listing`: List the media library tree instead of running tests
 
 ### Examples
 
@@ -58,6 +59,9 @@ uv run dlna-tester 192.168.1.100 8200
 
 # Verbose mode
 uv run dlna-tester 192.168.1.100 8200 -v
+
+# List media library tree
+uv run dlna-tester 192.168.1.100 8200 -l
 
 # Full scan - traverse ALL media items (recommended for thorough testing)
 uv run dlna-tester 192.168.1.100 8200 --full-scan
