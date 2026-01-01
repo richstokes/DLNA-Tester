@@ -126,8 +126,18 @@ This tool tests a DLNA media server for protocol compliance by:
         action="store_true",
         help="List the media library tree instead of running tests",
     )
+    parser.add_argument(
+        "-p",
+        "--playmedia",
+        action="store_true",
+        help="Simulate playing a video file (mkv/mp4) by making HTTP requests like a real DLNA client",
+    )
 
     args = parser.parse_args()
+
+    # --playmedia implies --full-scan
+    if args.playmedia:
+        args.full_scan = True
 
     # Disable colors if requested
     if args.no_color:
@@ -142,10 +152,220 @@ This tool tests a DLNA media server for protocol compliance by:
 
     if args.listing:
         run_listing(args.host, args.port, args.timeout, args.max_items, args.no_color)
+    elif args.playmedia:
+        run_playmedia(args.host, args.port, args.timeout, args.max_items, args.verbose)
     elif args.json:
         run_json_output(args.host, args.port, args.timeout, args.verbose, args.full_scan, args.max_items)
     else:
         run_interactive(args.host, args.port, args.timeout, args.verbose, args.full_scan, args.max_items)
+
+
+def find_video_file(tester: DLNATester, max_items: int) -> MediaItem | None:
+    """Find the first video file (mkv/mp4) in the media library."""
+    from .tester import MediaItem
+
+    items_scanned = 0
+
+    def search_recursive(object_id: str) -> MediaItem | None:
+        nonlocal items_scanned
+
+        if items_scanned >= max_items:
+            return None
+
+        result = tester.browse(object_id, "BrowseDirectChildren", "*", 0, 0)
+        if result is None:
+            return None
+
+        items, _, _ = result
+
+        for item in items:
+            if items_scanned >= max_items:
+                return None
+
+            items_scanned += 1
+
+            if item.is_container:
+                found = search_recursive(item.id)
+                if found:
+                    return found
+            else:
+                # Check if it's a video file (mkv or mp4)
+                if item.resources:
+                    for res in item.resources:
+                        url = res.get("url", "").lower()
+                        protocol_info = res.get("protocol_info", "").lower()
+                        if any(ext in url for ext in [".mkv", ".mp4"]) or \
+                           any(fmt in protocol_info for fmt in ["video/x-matroska", "video/mp4"]):
+                            return item
+        return None
+
+    return search_recursive("0")
+
+
+def run_playmedia(host: str, port: int, timeout: float, max_items: int, verbose: bool) -> NoReturn:
+    """Simulate playing a video file like a real DLNA client would."""
+    from .tester import MediaItem
+
+    print_header("DLNA Media Playback Simulation")
+    print(f"Server: {colorize(f'{host}:{port}', Colors.BOLD)}")
+    print()
+
+    try:
+        with DLNATester(host, port, timeout) as tester:
+            # Get device info
+            device = tester.fetch_device_description()
+            if device:
+                print(f"Device: {colorize(device.friendly_name, Colors.CYAN)}")
+
+            if tester._content_directory is None:
+                print(colorize("Error: ContentDirectory service not available", Colors.RED))
+                sys.exit(1)
+
+            print("Scanning for video files (mkv/mp4)...")
+            video = find_video_file(tester, max_items)
+
+            if video is None:
+                print(colorize("Warning: No mkv/mp4 video files found in media library", Colors.YELLOW))
+                sys.exit(0)
+
+            print(f"Found video: {colorize(video.title, Colors.GREEN)}")
+            print()
+
+            if not video.resources:
+                print(colorize("Error: Video has no playable resources", Colors.RED))
+                sys.exit(1)
+
+            # Use the first resource
+            resource = video.resources[0]
+            url = resource.get("url", "")
+            if not url:
+                print(colorize("Error: Video resource has no URL", Colors.RED))
+                sys.exit(1)
+
+            print_subheader("Simulating DLNA Playback")
+            print(f"Resource URL: {colorize(url, Colors.GRAY)}")
+            if resource.get("protocol_info"):
+                print(f"Protocol Info: {colorize(resource['protocol_info'], Colors.GRAY)}")
+            print()
+
+            # Perform the playback simulation
+            simulate_playback(tester, url, verbose)
+
+            print()
+            print(colorize("✓ Playback simulation completed successfully", Colors.GREEN))
+            sys.exit(0)
+
+    except KeyboardInterrupt:
+        print()
+        print(colorize("Interrupted.", Colors.YELLOW))
+        sys.exit(130)
+    except Exception as e:
+        print(colorize(f"Error: {e}", Colors.RED))
+        sys.exit(2)
+
+
+def simulate_playback(tester: DLNATester, url: str, verbose: bool) -> None:
+    """Simulate the HTTP requests a real DLNA client would make to play a video.
+
+    A real DLNA client typically:
+    1. Sends a HEAD request to get content info
+    2. Sends a GET request with Range header for initial playback
+    3. May send additional range requests for seeking
+    """
+    import time
+
+    full_url = tester._make_url(url)
+
+    # Step 1: HEAD request (get content info)
+    print(f"  {colorize('[1/4]', Colors.CYAN)} HEAD request (get content info)...")
+    try:
+        response = tester.client.head(full_url, follow_redirects=True)
+        if verbose:
+            print(f"        Status: {response.status_code}")
+            print(f"        Content-Type: {response.headers.get('Content-Type', 'N/A')}")
+            print(f"        Content-Length: {response.headers.get('Content-Length', 'N/A')}")
+            print(f"        Accept-Ranges: {response.headers.get('Accept-Ranges', 'N/A')}")
+        content_length = int(response.headers.get('Content-Length', 0))
+        if response.status_code == 200:
+            print(f"        {colorize('✓ OK', Colors.GREEN)}")
+        else:
+            print(f"        {colorize(f'⚠ Status {response.status_code}', Colors.YELLOW)}")
+    except Exception as e:
+        print(f"        {colorize(f'✗ Failed: {e}', Colors.RED)}")
+        content_length = 0
+
+    # Step 2: Initial range request (start of file)
+    print(f"  {colorize('[2/4]', Colors.CYAN)} GET range request (start of file, bytes=0-65535)...")
+    try:
+        headers = {
+            "Range": "bytes=0-65535",
+            "User-Agent": "DLNA-Tester/1.0 UPnP/1.0",
+            "transferMode.dlna.org": "Streaming",
+        }
+        response = tester.client.get(full_url, headers=headers, follow_redirects=True)
+        if verbose:
+            print(f"        Status: {response.status_code}")
+            print(f"        Content-Range: {response.headers.get('Content-Range', 'N/A')}")
+            print(f"        Bytes received: {len(response.content)}")
+        if response.status_code in (200, 206):
+            print(f"        {colorize('✓ OK', Colors.GREEN)}")
+        else:
+            print(f"        {colorize(f'⚠ Status {response.status_code}', Colors.YELLOW)}")
+    except Exception as e:
+        print(f"        {colorize(f'✗ Failed: {e}', Colors.RED)}")
+
+    # Step 3: Seek request (middle of file)
+    if content_length > 0:
+        print(f"  {colorize('[3/4]', Colors.CYAN)} GET range request (seek to middle)...")
+        try:
+            mid_point = content_length // 2
+            end_point = min(mid_point + 65535, content_length - 1)
+            headers = {
+                "Range": f"bytes={mid_point}-{end_point}",
+                "User-Agent": "DLNA-Tester/1.0 UPnP/1.0",
+                "transferMode.dlna.org": "Streaming",
+            }
+            response = tester.client.get(full_url, headers=headers, follow_redirects=True)
+            if verbose:
+                print(f"        Status: {response.status_code}")
+                print(f"        Requested: bytes={mid_point}-{end_point}")
+                print(f"        Content-Range: {response.headers.get('Content-Range', 'N/A')}")
+                print(f"        Bytes received: {len(response.content)}")
+            if response.status_code in (200, 206):
+                print(f"        {colorize('✓ OK', Colors.GREEN)}")
+            else:
+                print(f"        {colorize(f'⚠ Status {response.status_code}', Colors.YELLOW)}")
+        except Exception as e:
+            print(f"        {colorize(f'✗ Failed: {e}', Colors.RED)}")
+    else:
+        print(f"  {colorize('[3/4]', Colors.CYAN)} GET range request (seek to middle)...")
+        print(f"        {colorize('○ Skipped (unknown content length)', Colors.GRAY)}")
+
+    # Step 4: End of file request (sometimes clients do this)
+    if content_length > 65536:
+        print(f"  {colorize('[4/4]', Colors.CYAN)} GET range request (end of file)...")
+        try:
+            start_point = content_length - 65536
+            headers = {
+                "Range": f"bytes={start_point}-{content_length - 1}",
+                "User-Agent": "DLNA-Tester/1.0 UPnP/1.0",
+                "transferMode.dlna.org": "Streaming",
+            }
+            response = tester.client.get(full_url, headers=headers, follow_redirects=True)
+            if verbose:
+                print(f"        Status: {response.status_code}")
+                print(f"        Requested: bytes={start_point}-{content_length - 1}")
+                print(f"        Content-Range: {response.headers.get('Content-Range', 'N/A')}")
+                print(f"        Bytes received: {len(response.content)}")
+            if response.status_code in (200, 206):
+                print(f"        {colorize('✓ OK', Colors.GREEN)}")
+            else:
+                print(f"        {colorize(f'⚠ Status {response.status_code}', Colors.YELLOW)}")
+        except Exception as e:
+            print(f"        {colorize(f'✗ Failed: {e}', Colors.RED)}")
+    else:
+        print(f"  {colorize('[4/4]', Colors.CYAN)} GET range request (end of file)...")
+        print(f"        {colorize('○ Skipped (file too small or unknown length)', Colors.GRAY)}")
 
 
 def run_listing(host: str, port: int, timeout: float, max_items: int, no_color: bool) -> NoReturn:
