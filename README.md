@@ -77,7 +77,20 @@ uv run dlna-tester 192.168.1.100 8200 --json
 
 # Pipe-friendly (no colors)
 uv run dlna-tester 192.168.1.100 8200 --no-color
+
+# Simulate playback of a random video file (mkv/mp4)
+uv run dlna-tester 192.168.1.100 8200 -p
 ```
+
+### Stress Testing
+
+A stress test script is included to test server stability under load:
+
+```bash
+./stress_test.sh [host] [port]
+```
+
+This runs 10 parallel workers, each repeatedly simulating video playback (`-p`) for 120 seconds. If any test fails, the script aborts immediately. Useful for testing concurrent connection handling.
 
 ## Test Categories
 
