@@ -161,33 +161,33 @@ This tool tests a DLNA media server for protocol compliance by:
 
 
 def find_video_file(tester: DLNATester, max_items: int) -> MediaItem | None:
-    """Find the first video file (mkv/mp4) in the media library."""
+    """Find a random video file (mkv/mp4) in the media library."""
+    import random
     from .tester import MediaItem
 
+    video_files: list[MediaItem] = []
     items_scanned = 0
 
-    def search_recursive(object_id: str) -> MediaItem | None:
+    def search_recursive(object_id: str) -> None:
         nonlocal items_scanned
 
         if items_scanned >= max_items:
-            return None
+            return
 
         result = tester.browse(object_id, "BrowseDirectChildren", "*", 0, 0)
         if result is None:
-            return None
+            return
 
         items, _, _ = result
 
         for item in items:
             if items_scanned >= max_items:
-                return None
+                return
 
             items_scanned += 1
 
             if item.is_container:
-                found = search_recursive(item.id)
-                if found:
-                    return found
+                search_recursive(item.id)
             else:
                 # Check if it's a video file (mkv or mp4)
                 if item.resources:
@@ -196,10 +196,11 @@ def find_video_file(tester: DLNATester, max_items: int) -> MediaItem | None:
                         protocol_info = res.get("protocol_info", "").lower()
                         if any(ext in url for ext in [".mkv", ".mp4"]) or \
                            any(fmt in protocol_info for fmt in ["video/x-matroska", "video/mp4"]):
-                            return item
-        return None
+                            video_files.append(item)
+                            break
 
-    return search_recursive("0")
+    search_recursive("0")
+    return random.choice(video_files) if video_files else None
 
 
 def run_playmedia(host: str, port: int, timeout: float, max_items: int, verbose: bool) -> NoReturn:
