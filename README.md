@@ -50,6 +50,7 @@ uv run dlna-tester 192.168.1.100 8200
 - `--full-scan`: Traverse ALL containers and media items (slower but thorough)
 - `--max-items N`: Maximum items to scan in full-scan mode (default: 1000)
 - `-l, --listing`: List the media library tree instead of running tests
+- `-p, --playmedia`: Simulate playing a random video file (mkv/mp4) by making the HTTP requests a real DLNA client would make (HEAD, range requests for seeking)
 
 ### Examples
 
